@@ -46,6 +46,72 @@ success() {
     printf "%b[OK]%b %b\n" "${COLOR_GREEN}${COLOR_BOLD}" "${COLOR_RESET}" "${message}"
 }
 
+# Global action, can be set via CLI flags or ASHELL_ACTION env var
+ACTION="${ASHELL_ACTION:-}"
+
+usage() {
+    cat <<'EOF'
+Usage: install.sh [--reinstall|-r] [--delete|-d] [--abort|-a] [--help|-h]
+
+When piping via curl, pass flags after "bash -s --" e.g.:
+  curl -fsSL https://raw.githubusercontent.com/DuperKnight/AShell/main/install.sh | bash -s -- --reinstall
+
+Environment alternative:
+  ASHELL_ACTION=reinstall|delete|abort curl -fsSL ... | bash -s --
+EOF
+}
+
+parse_args() {
+    # CLI flags override environment variable
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --reinstall|-r)
+                ACTION="reinstall";
+                ;;
+            --delete|-d)
+                ACTION="delete";
+                ;;
+            --abort|-a)
+                ACTION="abort";
+                ;;
+            --help|-h)
+                usage
+                exit 0
+                ;;
+            *)
+                error "Unknown argument: $1 (use --help)"
+                ;;
+        esac
+        shift
+    done
+}
+
+prompt_action_interactive() {
+    # Prompt the user even when stdin is not a TTY by reading from /dev/tty
+    local prompt_msg="Choose an action: [R]einstall, [D]elete, [A]bort: "
+    local choice=""
+    if [ -t 0 ]; then
+        printf "%s" "${prompt_msg}"
+        # Avoid set -e exit on EOF
+        read -r choice || true
+    elif [ -r /dev/tty ]; then
+        # Write prompt to TTY and read response from TTY
+        printf "%s" "${prompt_msg}" > /dev/tty
+        # shellcheck disable=SC2162
+        read -r choice < /dev/tty || true
+    else
+        # Non-interactive and no TTY available
+        error "No TTY available to prompt for action. Re-run with --reinstall/--delete flags or set ASHELL_ACTION."
+    fi
+
+    case "${choice}" in
+        [Rr]) ACTION="reinstall" ;;
+        [Dd]) ACTION="delete" ;;
+        [Aa]|"" ) ACTION="abort" ;;
+        *) ACTION="abort" ;;
+    esac
+}
+
 ensure_command() {
     if ! command -v "$1" >/dev/null 2>&1; then
         error "$1 is required but not installed."
@@ -373,16 +439,19 @@ ensure_path_export() {
 }
 
 main() {
+    parse_args "$@"
     if [ -d "${INSTALL_DIR}" ]; then
         printf "AShell is already installed at %s.\n" "${INSTALL_DIR}"
-        printf "Choose an action: [R]einstall, [D]elete, [A]bort: "
-        read -r user_choice
-        case "${user_choice}" in
-            [Rr])
+        # Decide action: CLI/env provided, else prompt (via TTY if needed)
+        if [ -z "${ACTION}" ]; then
+            prompt_action_interactive
+        fi
+        case "${ACTION}" in
+            reinstall)
                 log "Reinstall selected; configuration will be reset."
                 REINSTALL_MODE=1
                 ;;
-            [Dd])
+            delete)
                 log "Delete selected; removing existing installation."
                 rm -rf "${INSTALL_DIR}"
                 rm -f "${WRAPPER_PATH}"
@@ -392,13 +461,9 @@ main() {
                 log "AShell installation removed."
                 exit 0
                 ;;
-            [Aa]|"" )
-                log "Installation aborted by user."
+            abort|*)
+                log "Installation aborted. Use --reinstall/--delete to override."
                 exit 0
-                ;;
-            *)
-                log "Unknown choice; aborting."
-                exit 1
                 ;;
         esac
     fi
