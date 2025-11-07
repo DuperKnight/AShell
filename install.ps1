@@ -35,7 +35,6 @@ function Write-Log {
     Write-Host "$ColorMagenta-$ColorReset $Message"
 }
 
-# Ensure Windows console understands ANSI escape sequences
 function Enable-VTSupport {
     try {
     $code = @"
@@ -92,7 +91,7 @@ function Throw-Error {
 
 function Write-Section {
     param([string]$Message)
-    Write-Host "" # spacer
+    Write-Host ""
     Write-Host "$ColorDim==>$ColorReset $ColorBold$ColorCyan$Message$ColorReset"
 }
 
@@ -281,9 +280,9 @@ function Install-Dependencies {
 function Setup-Configuration {
     param($PythonInfo, $InstallDir)
     Write-Log "Preparing configuration..."
-    # Ensure script-scoped ReinstallMode exists to avoid "VariableIsUndefined" when not set
+
     if (-not (Get-Variable -Scope Script -Name ReinstallMode -ErrorAction SilentlyContinue)) {
-        # default to $false when not previously set
+        
         $script:ReinstallMode = $false
     }
 
@@ -444,7 +443,6 @@ print(f"\nConfiguration written to {config_path}\n")
         Throw-Error "Virtual environment interpreter not found in $venvDir"
     }
 
-    # Write the config helper to a temporary script to avoid quoting issues with -c
     $tmpScript = [System.IO.Path]::GetTempFileName()
     Set-Content -LiteralPath $tmpScript -Value $code -Encoding UTF8
     try {

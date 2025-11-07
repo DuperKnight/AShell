@@ -46,7 +46,6 @@ success() {
     printf "%b[OK]%b %b\n" "${COLOR_GREEN}${COLOR_BOLD}" "${COLOR_RESET}" "${message}"
 }
 
-# Global action, can be set via CLI flags or ASHELL_ACTION env var
 ACTION="${ASHELL_ACTION:-}"
 
 usage() {
@@ -62,7 +61,6 @@ EOF
 }
 
 parse_args() {
-    # CLI flags override environment variable
     while [ $# -gt 0 ]; do
         case "$1" in
             --reinstall|-r)
@@ -87,20 +85,19 @@ parse_args() {
 }
 
 prompt_action_interactive() {
-    # Prompt the user even when stdin is not a TTY by reading from /dev/tty
     local prompt_msg="Choose an action: [R]einstall, [D]elete, [A]bort: "
     local choice=""
     if [ -t 0 ]; then
         printf "%s" "${prompt_msg}"
-        # Avoid set -e exit on EOF
+        
         read -r choice || true
     elif [ -r /dev/tty ]; then
-        # Write prompt to TTY and read response from TTY
+        
         printf "%s" "${prompt_msg}" > /dev/tty
-        # shellcheck disable=SC2162
+        
         read -r choice < /dev/tty || true
     else
-        # Non-interactive and no TTY available
+        
         error "No TTY available to prompt for action. Re-run with --reinstall/--delete flags or set ASHELL_ACTION."
     fi
 
@@ -442,7 +439,7 @@ main() {
     parse_args "$@"
     if [ -d "${INSTALL_DIR}" ]; then
         printf "AShell is already installed at %s.\n" "${INSTALL_DIR}"
-        # Decide action: CLI/env provided, else prompt (via TTY if needed)
+        
         if [ -z "${ACTION}" ]; then
             prompt_action_interactive
         fi
