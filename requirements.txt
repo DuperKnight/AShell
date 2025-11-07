@@ -1,0 +1,3 @@
+psutil==7.1.3
+puremagic==1.30
+pypdf==6.1.3
