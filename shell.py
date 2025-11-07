@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import readline
+try:
+    import readline  # type: ignore
+except Exception:
+    try:
+        import pyreadline3 as readline  # type: ignore
+    except Exception:
+        readline = None  # type: ignore
 import shlex
 import subprocess
 import platform
@@ -35,6 +41,19 @@ DEFAULT_CONFIG: dict[str, object] = {
         "symbol": "$",
     },
 }
+
+
+# On Windows, ensure ANSI colors work in most consoles
+if platform.system() == "Windows":
+    try:
+        import colorama  # type: ignore
+
+        try:
+            colorama.just_fix_windows_console()
+        except AttributeError:
+            colorama.init()
+    except Exception:
+        pass
 
 
 def _default_config_copy() -> dict[str, object]:
@@ -149,7 +168,7 @@ def _build_prompt(working_folder: Path, config: dict[str, object]) -> str:
     else:
         prompt_text = "> "
 
-    return _mark_ansi_sequences(prompt_text)
+    return _mark_ansi_sequences(prompt_text) if readline else prompt_text
 
 
 def _clear_screen(working_folder: Path) -> None:
@@ -274,10 +293,15 @@ def main():
         working_folder = Path.home()
     set_current_working_folder(str(working_folder))
 
-    readline.set_completer(completer)
-    readline.set_completer_delims(" \t\n")
-    readline.parse_and_bind("tab: complete")
-    readline.parse_and_bind("set show-all-if-ambiguous on")
+    if readline:
+        readline.set_completer(completer)
+        readline.set_completer_delims(" \t\n")
+        try:
+            readline.parse_and_bind("tab: complete")
+            readline.parse_and_bind("set show-all-if-ambiguous on")
+        except Exception:
+            # Some readline implementations don't support these options
+            pass
 
     _clear_screen(working_folder)
 

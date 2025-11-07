@@ -11,17 +11,78 @@ $ConfigFile = Join-Path $ConfigDir '.ashell.conf'
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$ColorReset    = "`e[0m"
-$ColorBold     = "`e[1m"
-$ColorDim      = "`e[2m"
-$ColorMagenta  = "`e[35m"
-$ColorCyan     = "`e[36m"
-$ColorGreen    = "`e[32m"
-$ColorRed      = "`e[31m"
+$Esc = [char]27
+$ColorReset    = "$Esc[0m"
+$ColorBold     = "$Esc[1m"
+$ColorDim      = "$Esc[2m"
+$ColorMagenta  = "$Esc[35m"
+$ColorCyan     = "$Esc[36m"
+$ColorGreen    = "$Esc[32m"
+$ColorRed      = "$Esc[31m"
+
+function Ensure-Utf8Output {
+    try {
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        [Console]::InputEncoding = [System.Text.Encoding]::UTF8
+    }
+    catch {
+        # Fallback silently; console will render with current encoding
+    }
+}
 
 function Write-Log {
     param([string]$Message)
     Write-Host "$ColorMagenta-$ColorReset $Message"
+}
+
+# Ensure Windows console understands ANSI escape sequences
+function Enable-VTSupport {
+    try {
+    $code = @"
+using System;
+using System.Runtime.InteropServices;
+public static class WinConsole {
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern IntPtr GetStdHandle(int nStdHandle);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern bool GetConsoleMode(IntPtr hConsoleHandle, out int lpMode);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern bool SetConsoleMode(IntPtr hConsoleHandle, int dwMode);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern bool SetConsoleOutputCP(uint wCodePageID);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern bool SetConsoleCP(uint wCodePageID);
+}
+"@
+        if (-not ([System.Management.Automation.PSTypeName]'WinConsole').Type) {
+            Add-Type -TypeDefinition $code -ErrorAction Stop | Out-Null
+        }
+        $STD_OUTPUT_HANDLE = -11
+        $ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        $hOut = [WinConsole]::GetStdHandle($STD_OUTPUT_HANDLE)
+        if ($hOut -ne [IntPtr]::Zero) {
+            $mode = 0
+            if ([WinConsole]::GetConsoleMode($hOut, [ref]$mode)) {
+                [WinConsole]::SetConsoleMode($hOut, ($mode -bor $ENABLE_VIRTUAL_TERMINAL_PROCESSING)) | Out-Null
+            }
+        }
+
+        try {
+            [WinConsole]::SetConsoleOutputCP(65001) | Out-Null
+            [WinConsole]::SetConsoleCP(65001) | Out-Null
+        }
+        catch {
+            try {
+                cmd /c "chcp 65001 > nul" | Out-Null
+            }
+            catch {
+                # ignore
+            }
+        }
+    }
+    catch {
+        # Best-effort only; ignore if not supported
+    }
 }
 
 function Throw-Error {
@@ -42,14 +103,22 @@ function Write-Success {
 
 function Show-Banner {
     Write-Host ''
-    Write-Host "${ColorMagenta}   █████████    █████████  █████               ████  ████ ${ColorReset}"
-    Write-Host "${ColorMagenta}  ███▒▒▒▒▒███  ███▒▒▒▒▒███▒▒███               ▒▒███ ▒▒███ ${ColorReset}"
-    Write-Host "${ColorMagenta} ▒███    ▒███ ▒███    ▒▒▒  ▒███████    ██████  ▒███  ▒███ ${ColorReset}"
-    Write-Host "${ColorMagenta} ▒███████████ ▒▒█████████  ▒███▒▒███  ███▒▒███ ▒███  ▒███ ${ColorReset}"
-    Write-Host "${ColorMagenta} ▒███▒▒▒▒▒███  ▒▒▒▒▒▒▒▒███ ▒███ ▒███ ▒███████  ▒███  ▒███ ${ColorReset}"
-    Write-Host "${ColorMagenta} ▒███    ▒███  ███    ▒███ ▒███ ▒███ ▒███▒▒▒   ▒███  ▒███ ${ColorReset}"
-    Write-Host "${ColorMagenta} █████   █████▒▒█████████  ████ █████▒▒██████  █████ █████${ColorReset}"
-    Write-Host "${ColorMagenta}▒▒▒▒▒   ▒▒▒▒▒  ▒▒▒▒▒▒▒▒▒  ▒▒▒▒ ▒▒▒▒▒  ▒▒▒▒▒▒  ▒▒▒▒▒ ▒▒▒▒▒ ${ColorReset}"
+    $block = [char]0x2588
+    $shade = [char]0x2592
+    $rawLines = @(
+        "   @@@@@@@@@    @@@@@@@@@  @@@@@               @@@@  @@@@ ",
+        "  @@@%%%%%@@@  @@@%%%%%@@@%%@@@               %%@@@ %%@@@ ",
+        " %@@@    %@@@ %@@@    %%%  %@@@@@@@    @@@@@@  %@@@  %@@@ ",
+        " %@@@@@@@@@@@ %%@@@@@@@@@  %@@@%%@@@  @@@%%@@@ %@@@  %@@@ ",
+        " %@@@%%%%%@@@  %%%%%%%%@@@ %@@@ %@@@ %@@@@@@@  %@@@  %@@@ ",
+        " %@@@    %@@@  @@@    %@@@ %@@@ %@@@ %@@@%%%   %@@@  %@@@ ",
+        " @@@@@   @@@@@%%@@@@@@@@@  @@@@ @@@@@%%@@@@@@  @@@@@ @@@@@",
+        "%%%%%   %%%%%  %%%%%%%%  %%%% %%%%%  %%%%%%  %%%%% %%%%% "
+    )
+    foreach ($raw in $rawLines) {
+        $line = $raw.Replace('@', $block).Replace('%', $shade)
+        Write-Host "${ColorMagenta}$line${ColorReset}"
+    }
     Write-Host ''
     Write-Host "${ColorCyan}${ColorBold}              Welcome to the AShell installer!${ColorReset}"
     Write-Host "${ColorDim}------------------------------------------------------------${ColorReset}"
@@ -173,23 +242,51 @@ function New-Venv {
 
 function Install-Dependencies {
     param($VenvPath, $InstallDir)
-    $pip = Join-Path $VenvPath 'Scripts\pip.exe'
+    $pythonExe = Join-Path $VenvPath 'Scripts\python.exe'
+    if (-not (Test-Path $pythonExe)) {
+        $pythonExe = Join-Path $VenvPath 'bin/python'
+    }
+    if (-not (Test-Path $pythonExe)) {
+        Throw-Error "Virtual environment interpreter not found in $VenvPath"
+    }
+
     Write-Log "Upgrading pip..."
-    & $pip install --upgrade pip | Out-Null
+    & $pythonExe -m pip install --upgrade pip | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Throw-Error "Failed to upgrade pip inside the virtual environment."
+    }
 
     $requirements = Join-Path $InstallDir 'requirements.txt'
     if (Test-Path $requirements) {
         Write-Log "Installing dependencies..."
-        & $pip install -r $requirements | Out-Null
+        & $pythonExe -m pip install -r $requirements | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Throw-Error "Dependency installation failed."
+        }
     }
     else {
         Write-Log "No requirements.txt found; skipping dependency installation."
+    }
+
+    $isWindows = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
+    if ($isWindows) {
+        Write-Log "Ensuring Windows readline support..."
+        & $pythonExe -m pip install pyreadline3 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Throw-Error "Failed to install pyreadline3 for Windows readline support."
+        }
     }
 }
 
 function Setup-Configuration {
     param($PythonInfo, $InstallDir)
     Write-Log "Preparing configuration..."
+    # Ensure script-scoped ReinstallMode exists to avoid "VariableIsUndefined" when not set
+    if (-not (Get-Variable -Scope Script -Name ReinstallMode -ErrorAction SilentlyContinue)) {
+        # default to $false when not previously set
+        $script:ReinstallMode = $false
+    }
+
     if ($script:ReinstallMode) {
         Write-Log "Reinstall mode enabled; resetting configuration."
         if (Test-Path $ConfigFile) {
@@ -211,6 +308,35 @@ import pathlib
 import sys
 import importlib.util
 
+DEFAULT_FALLBACK = {
+    "show_welcome_screen": True,
+    "prompt": {
+        "show_user_host": True,
+        "show_time": True,
+        "show_path": True,
+        "show_symbol": True,
+        "symbol": "$",
+    },
+}
+
+
+def _clone_config(data: dict) -> dict:
+    return json.loads(json.dumps(data))
+
+
+def _load_default_config(install_dir: pathlib.Path) -> dict:
+    spec = importlib.util.spec_from_file_location(
+        'ashell_install_shell', install_dir / 'shell.py'
+    )
+    module = importlib.util.module_from_spec(spec)
+    if not spec.loader:
+        raise RuntimeError('Unable to load shell module for configuration setup')
+    spec.loader.exec_module(module)
+    loaded = getattr(module, 'DEFAULT_CONFIG', {}) or {}
+    if isinstance(loaded, dict):
+        return _clone_config(loaded)
+    return _clone_config(DEFAULT_FALLBACK)
+
 if len(sys.argv) >= 4:
     install_dir = pathlib.Path(sys.argv[1])
     config_dir = pathlib.Path(sys.argv[2])
@@ -223,14 +349,32 @@ else:
 
 config_dir.mkdir(parents=True, exist_ok=True)
 
-spec = importlib.util.spec_from_file_location('ashell_install_shell', install_dir / 'shell.py')
-module = importlib.util.module_from_spec(spec)
-if not spec.loader:
-    raise RuntimeError('Unable to load shell module for configuration setup')
-spec.loader.exec_module(module)
+install_dir_str = str(install_dir)
+if install_dir_str not in sys.path:
+    sys.path.insert(0, install_dir_str)
 
-default_config = getattr(module, 'DEFAULT_CONFIG', {}) or {}
-config = json.loads(json.dumps(default_config))
+try:
+    default_config = _load_default_config(install_dir)
+except ModuleNotFoundError as exc:
+    missing = getattr(exc, 'name', '') or ''
+    if missing not in {'readline', 'pyreadline', 'pyreadline3'}:
+        raise
+    print(
+        'AShell installer: readline module is unavailable; proceeding with fallback defaults.',
+        file=sys.stderr,
+    )
+    default_config = _clone_config(DEFAULT_FALLBACK)
+except ImportError as exc:
+    missing = getattr(exc, 'name', '') or ''
+    if missing not in {'readline', 'pyreadline', 'pyreadline3'}:
+        raise
+    print(
+        'AShell installer: readline module is unavailable; proceeding with fallback defaults.',
+        file=sys.stderr,
+    )
+    default_config = _clone_config(DEFAULT_FALLBACK)
+
+config = _clone_config(default_config)
 prompt_config = config.get('prompt', {})
 
 def ask_bool(question: str, default: bool) -> bool:
@@ -300,8 +444,20 @@ print(f"\nConfiguration written to {config_path}\n")
         Throw-Error "Virtual environment interpreter not found in $venvDir"
     }
 
-    & $venvPython -c $code $InstallDir $ConfigDir $ConfigFile
-    Write-Log "Configuration saved at $ConfigFile"
+    # Write the config helper to a temporary script to avoid quoting issues with -c
+    $tmpScript = [System.IO.Path]::GetTempFileName()
+    Set-Content -LiteralPath $tmpScript -Value $code -Encoding UTF8
+    try {
+        & $venvPython $tmpScript $InstallDir $ConfigDir $ConfigFile
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0) {
+            Throw-Error "Configuration setup failed. See messages above."
+        }
+        Write-Log "Configuration saved at $ConfigFile"
+    }
+    finally {
+        if (Test-Path $tmpScript) { Remove-Item $tmpScript -Force }
+    }
 }
 
 function Write-Launcher {
@@ -326,6 +482,8 @@ function Ensure-Path {
 
 function Main {
     Clear-Host
+    Enable-VTSupport
+    Ensure-Utf8Output
     Show-Banner
 
     if (Test-Path $InstallDir) {
@@ -341,29 +499,12 @@ function Main {
             }
             'd' {
                 Write-Log "Delete selected; removing existing installation."
-                    Remove-Item $InstallDir -Recurse -Force -ErrorAction Stop
-                    if (Test-Path $ConfigFile) {
-                        Remove-Item $ConfigFile -Force -ErrorAction SilentlyContinue
-                    }
-                Write-Log "AShell installation removed."
-        $tmpScript = [System.IO.Path]::GetTempFileName()
-        Set-Content -LiteralPath $tmpScript -Value $code -Encoding UTF8
-
-        try {
-            $env:ASHELL_INSTALL_DIR = $InstallDir
-            $env:ASHELL_CONFIG_HOME = $ConfigDir
-            $env:ASHELL_CONFIG_FILE = $ConfigFile
-            $env:PYTHONPATH = if ($env:PYTHONPATH) { "$InstallDir;$env:PYTHONPATH" } else { $InstallDir }
-            & $venvPython $tmpScript $InstallDir $ConfigDir $ConfigFile
-            Write-Log "Configuration saved at $ConfigFile"
-        }
-        finally {
-            if (Test-Path $tmpScript) { Remove-Item $tmpScript -Force }
-            Remove-Item Env:ASHELL_INSTALL_DIR -ErrorAction SilentlyContinue
-            Remove-Item Env:ASHELL_CONFIG_HOME -ErrorAction SilentlyContinue
-            Remove-Item Env:ASHELL_CONFIG_FILE -ErrorAction SilentlyContinue
-            Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
-        }
+                Remove-Item $InstallDir -Recurse -Force -ErrorAction Stop
+                if (Test-Path $ConfigFile) {
+                    Remove-Item $ConfigFile -Force -ErrorAction SilentlyContinue
+                }
+                Write-Success "AShell installation removed."
+                return
             }
             'a' { Write-Log "Installation aborted by user."; return }
             ''  { Write-Log "Installation aborted by user."; return }
