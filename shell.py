@@ -16,11 +16,6 @@ import psutil
 import os
 import socket
 import sys
-import shutil
-import tempfile
-import urllib.error
-import urllib.request
-import zipfile
 from datetime import datetime
 
 from commands import commandHelper
@@ -28,6 +23,11 @@ from autocomplete import (
     completer,
     resolve_external_executable,
     set_current_working_folder,
+)
+from upgrade import (
+    check_for_newer_version,
+    format_version_for_display,
+    perform_upgrade,
 )
 
 
@@ -46,13 +46,6 @@ DEFAULT_CONFIG: dict[str, object] = {
         "symbol": "$",
     },
 }
-
-
-REPO_OWNER = "DuperKnight"
-REPO_NAME = "AShell"
-TAGS_API_URL = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/tags"
-
-_LATEST_RELEASE_CACHE: tuple[str, str] | None = None
 
 
 if platform.system() == "Windows":
@@ -97,190 +90,17 @@ def _mark_ansi_sequences(value: str) -> str:
     return "".join(pieces)
 
 
-def _parse_version(raw: str) -> tuple[int, int, int] | None:
-    cleaned = raw.strip()
-    if cleaned.startswith(("v", "V")):
-        cleaned = cleaned[1:]
-    parts = cleaned.split(".")
-    if len(parts) < 3:
-        return None
-    try:
-        major = int(parts[0])
-        minor = int(parts[1])
-        patch = int(parts[2])
-    except ValueError:
-        return None
-    return major, minor, patch
-
-
-def _compare_versions(left: str, right: str) -> int:
-    parsed_left = _parse_version(left)
-    parsed_right = _parse_version(right)
-    if parsed_left is None or parsed_right is None:
-        raise ValueError("Unparseable version string")
-    if parsed_left > parsed_right:
-        return 1
-    if parsed_left < parsed_right:
-        return -1
-    return 0
-
-
-def _format_version_for_display(version: str) -> str:
-    stripped = version.strip()
-    if stripped.lower().startswith("v"):
-        return stripped
-    return f"v{stripped}"
-
-
-def _fetch_latest_release_info(force_refresh: bool = False) -> tuple[str, str] | None:
-    global _LATEST_RELEASE_CACHE
-    if not force_refresh and _LATEST_RELEASE_CACHE is not None:
-        return _LATEST_RELEASE_CACHE
-
-    request = urllib.request.Request(
-        TAGS_API_URL,
-        headers={"User-Agent": "AShell"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            data = json.load(response)
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-        return None
-
-    if not isinstance(data, list):
-        return None
-
-    best_numeric: tuple[int, int, int] | None = None
-    best_entry: tuple[str, str] | None = None
-
-    for entry in data:
-        tag_name = entry.get("name")
-        zip_url = entry.get("zipball_url")
-        if not isinstance(tag_name, str) or not isinstance(zip_url, str):
-            continue
-        parsed = _parse_version(tag_name)
-        if parsed is None:
-            continue
-        if best_numeric is None or parsed > best_numeric:
-            best_numeric = parsed
-            best_entry = (tag_name, zip_url)
-
-    if best_entry is not None:
-        _LATEST_RELEASE_CACHE = best_entry
-        return best_entry
-    return None
-
-
-def _check_for_update_notice(force_refresh: bool = False) -> str | None:
-    release = _fetch_latest_release_info(force_refresh=force_refresh)
+def _build_update_notice(force_refresh: bool = False) -> str | None:
+    release = check_for_newer_version(SHELL_VERSION, force_refresh=force_refresh)
     if not release:
         return None
     latest_version, _ = release
-    try:
-        if _compare_versions(latest_version, SHELL_VERSION) <= 0:
-            return None
-    except ValueError:
-        return None
-
-    display_latest = _format_version_for_display(latest_version)
-    display_current = _format_version_for_display(SHELL_VERSION)
+    display_latest = format_version_for_display(latest_version)
+    display_current = format_version_for_display(SHELL_VERSION)
     return (
         f"{bcolors.WARNING}AShell update available: {display_latest} "
         f"(current {display_current}). Run 'ashell upgrade' to install.{bcolors.ENDC}"
     )
-
-
-def _download_release_archive(url: str, destination: Path) -> None:
-    request = urllib.request.Request(url, headers={"User-Agent": "AShell"})
-    with urllib.request.urlopen(request, timeout=60) as response, destination.open("wb") as handle:
-        shutil.copyfileobj(response, handle)
-
-
-def _extract_release_archive(archive_path: Path, destination: Path) -> Path:
-    destination.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(archive_path) as archive:
-        archive.extractall(destination)
-        top_level: Path | None = None
-        for member in archive.namelist():
-            name = member.split("/", 1)[0]
-            if name and not name.startswith("__MACOSX"):
-                top_level = destination / name
-                break
-    if top_level and top_level.exists():
-        return top_level
-    raise RuntimeError("Unable to locate extracted release root")
-
-
-def _copy_release_contents(source_root: Path, target_root: Path) -> None:
-    for item in source_root.iterdir():
-        target = target_root / item.name
-        if item.is_dir():
-            if target.exists() and target.is_file():
-                target.unlink()
-            shutil.copytree(item, target, dirs_exist_ok=True)
-        else:
-            if target.exists() and target.is_dir():
-                shutil.rmtree(target)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(item, target)
-
-
-def _install_requirements(install_dir: Path) -> bool:
-    requirements = install_dir / "requirements.txt"
-    if not requirements.exists():
-        return True
-
-    print("Updating Python dependencies...")
-    try:
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-r", str(requirements)],
-            check=True,
-        )
-    except subprocess.CalledProcessError as exc:
-        print(f"AShell: pip install failed (exit code {exc.returncode}).")
-        return False
-    return True
-
-
-def _perform_upgrade() -> int:
-    print(f"{bcolors.BOLD}Checking for updates...{bcolors.ENDC}")
-    release = _fetch_latest_release_info(force_refresh=True)
-    if not release:
-        print("AShell: Could not retrieve release information from GitHub.")
-        return 1
-
-    latest_version, zip_url = release
-    try:
-        comparison = _compare_versions(latest_version, SHELL_VERSION)
-    except ValueError:
-        print("AShell: Unable to compare version numbers.")
-        return 1
-
-    if comparison <= 0:
-        print("AShell is already up to date.")
-        return 0
-
-    display_latest = _format_version_for_display(latest_version)
-    display_current = _format_version_for_display(SHELL_VERSION)
-    print(f"Upgrading AShell from {display_current} to {display_latest}...")
-
-    install_dir = Path(__file__).resolve().parent
-    try:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            tmp_path = Path(tmp_dir)
-            archive_path = tmp_path / "ashell.zip"
-            _download_release_archive(zip_url, archive_path)
-            extracted_root = _extract_release_archive(archive_path, tmp_path / "src")
-            _copy_release_contents(extracted_root, install_dir)
-    except (urllib.error.URLError, OSError, RuntimeError, zipfile.BadZipFile) as exc:
-        print(f"AShell: Upgrade failed: {exc}")
-        return 1
-
-    if not _install_requirements(install_dir):
-        return 1
-
-    print(f"{bcolors.GREEN}{bcolors.BOLD}Upgrade complete.{bcolors.ENDC} Restart AShell to use {display_latest}.")
-    return 0
 
 
 def load_config() -> dict[str, object]:
@@ -475,7 +295,7 @@ def get_system_info():
 
 def main():
     config = load_config()
-    update_notice_message = _check_for_update_notice()
+    update_notice_message = _build_update_notice()
 
     start_dir = os.environ.pop(START_DIR_ENV, "")
     if start_dir:
@@ -498,7 +318,6 @@ def main():
             readline.parse_and_bind("tab: complete")
             readline.parse_and_bind("set show-all-if-ambiguous on")
         except Exception:
-            # Some readline implementations don't support these options
             pass
 
     _clear_screen(working_folder)
@@ -551,7 +370,7 @@ def main():
 
             print(f"{bcolors.DIM}Reloading AShell...{bcolors.ENDC}")
             config = load_config()
-            update_notice_message = _check_for_update_notice(force_refresh=True)
+            update_notice_message = _build_update_notice(force_refresh=True)
             set_current_working_folder(str(working_folder))
             _clear_screen(working_folder)
             if bool(config.get("show_welcome_screen", True)):
@@ -571,7 +390,8 @@ def main():
             print(                    "  | rm - Deletes a file/folder")
             print(bcolors.CHILL_DIM + "  | micro - Edit any file" + bcolors.ENDC)
             print(                    "  | reload [--full] - Reload AShell")
-            print(bcolors.CHILL_DIM + "  | exit - Exit the shell" + bcolors.ENDC)
+            print(bcolors.CHILL_DIM + "  | ashell upgrade - Upgrades AShell to a newer version" + bcolors.ENDC)
+            print(                    "  | exit - Exit the shell")
 
         elif command_lower == 'info':
             info = get_system_info()
@@ -624,7 +444,12 @@ if __name__ == "__main__":
             if len(cli_args) > 1:
                 print("AShell: 'upgrade' does not accept additional arguments.")
                 sys.exit(1)
-            sys.exit(_perform_upgrade())
+            sys.exit(
+                perform_upgrade(
+                    SHELL_VERSION,
+                    install_dir=Path(__file__).resolve().parent,
+                )
+            )
         print(f"AShell: unknown argument '{cli_args[0]}'")
         sys.exit(1)
     main()

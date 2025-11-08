@@ -40,6 +40,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec("touch", ("touch",), (), True),
     CommandSpec("rm", ("rm",), ("-f", "-r", "-R", "-rf", "-fr", "--"), True),
     CommandSpec("micro", ("micro",), (), True),
+    CommandSpec("ashell", ("ashell",), ("upgrade"))
 )
 
 COMMAND_BY_ALIAS: dict[str, CommandSpec] = {}
