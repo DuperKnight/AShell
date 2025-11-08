@@ -328,98 +328,104 @@ def main():
         print(update_notice_message)
 
     while True:
-        prompt = _build_prompt(working_folder, config)
-        command = input(prompt)
-        command_stripped = command.strip()
-        if not command_stripped:
-            continue
-        command_lower = command_stripped.lower()
-
-        if command_lower == 'exit':
-            print("Exiting AShell. Goodbye!")
-            break
-
-        elif command_lower == 'reload' or command_lower.startswith('reload '):
-            try:
-                reload_tokens = shlex.split(command)
-            except ValueError:
-                print("AShell: Failed to parse reload arguments")
+        try:
+            prompt = _build_prompt(working_folder, config)
+            command = input(prompt)
+            command_stripped = command.strip()
+            if not command_stripped:
                 continue
+            command_lower = command_stripped.lower()
 
-            flags = reload_tokens[1:]
-            full_flags = {"--full", "--hard", "--all", "-f", "-a"}
-            full_reload = any(flag in full_flags for flag in flags)
-            unknown_flags = [flag for flag in flags if flag not in full_flags]
+            if command_lower == 'exit':
+                print("Exiting AShell. Goodbye!")
+                break
 
-            if unknown_flags:
-                print(
-                    "AShell: Unknown reload flag(s): "
-                    + ", ".join(unknown_flags)
-                )
-                continue
-
-            if full_reload:
-                print(f"{bcolors.DIM}Performing full reload...{bcolors.ENDC}")
-                os.environ[START_DIR_ENV] = str(working_folder)
+            elif command_lower == 'reload' or command_lower.startswith('reload '):
                 try:
-                    os.execl(sys.executable, sys.executable, *sys.argv)
-                except OSError as exc:
-                    print(f"AShell: Failed to fully reload: {exc}")
-                    os.environ.pop(START_DIR_ENV, None)
+                    reload_tokens = shlex.split(command)
+                except ValueError:
+                    print("AShell: Failed to parse reload arguments")
+                    continue
+
+                flags = reload_tokens[1:]
+                full_flags = {"--full", "--hard", "--all", "-f", "-a"}
+                full_reload = any(flag in full_flags for flag in flags)
+                unknown_flags = [flag for flag in flags if flag not in full_flags]
+
+                if unknown_flags:
+                    print(
+                        "AShell: Unknown reload flag(s): "
+                        + ", ".join(unknown_flags)
+                    )
+                    continue
+
+                if full_reload:
+                    print(f"{bcolors.DIM}Performing full reload...{bcolors.ENDC}")
+                    os.environ[START_DIR_ENV] = str(working_folder)
+                    try:
+                        os.execl(sys.executable, sys.executable, *sys.argv)
+                    except OSError as exc:
+                        print(f"AShell: Failed to fully reload: {exc}")
+                        os.environ.pop(START_DIR_ENV, None)
+                    continue
+
+                print(f"{bcolors.DIM}Reloading AShell...{bcolors.ENDC}")
+                config = load_config()
+                update_notice_message = _build_update_notice(force_refresh=True)
+                set_current_working_folder(str(working_folder))
+                _clear_screen(working_folder)
+                if bool(config.get("show_welcome_screen", True)):
+                    _render_welcome_screen()
+                if update_notice_message:
+                    print(update_notice_message)
                 continue
 
-            print(f"{bcolors.DIM}Reloading AShell...{bcolors.ENDC}")
-            config = load_config()
-            update_notice_message = _build_update_notice(force_refresh=True)
-            set_current_working_folder(str(working_folder))
-            _clear_screen(working_folder)
-            if bool(config.get("show_welcome_screen", True)):
-                _render_welcome_screen()
-            if update_notice_message:
-                print(update_notice_message)
+            elif command_lower == 'help':
+                print(                    "- Available commands:")
+                print(                    "  | help - Show this help message")
+                print(bcolors.CHILL_DIM + "  | cd - Go to a folder" + bcolors.ENDC)
+                print(                    "  | ls - Check whats inside a folder")
+                print(bcolors.CHILL_DIM + "  | clear - Clears the shell" + bcolors.ENDC)
+                print(                    "  | mkdir - Creates a directory in a desired folder")
+                print(bcolors.CHILL_DIM + "  | touch - Creates an empty file" + bcolors.ENDC)
+                print(                    "  | rm - Deletes a file/folder")
+                print(bcolors.CHILL_DIM + "  | micro - Edit any file" + bcolors.ENDC)
+                print(                    "  | reload [--full] - Reload AShell")
+                print(bcolors.CHILL_DIM + "  | ashell upgrade - Upgrades AShell to a newer version" + bcolors.ENDC)
+                print(                    "  | exit - Exit the shell")
+
+            elif command_lower == 'info':
+                info = get_system_info()
+                print("\n".join(info))
+
+            else:
+                try:
+                    parts = shlex.split(command)
+                except ValueError:
+                    print("AShell: Failed to parse command input")
+                    continue
+
+                if len(parts) == 0:
+                    continue
+
+                cmd = parts[0]
+                args = parts[1:]
+
+                handled, folder = commandHelper.run(working_folder, cmd, *args)
+                if handled:
+                    if folder:
+                        new_folder = Path(folder)
+                        if new_folder != working_folder:
+                            working_folder = new_folder
+                            set_current_working_folder(str(working_folder))
+                    continue
+
+                _run_external_command(working_folder, cmd, args)
+
+        except KeyboardInterrupt:
+            # Gracefully handle Ctrl+C to keep the shell running like typical terminals.
+            print()
             continue
-
-        elif command_lower == 'help':
-            print(                    "- Available commands:")
-            print(                    "  | help - Show this help message")
-            print(bcolors.CHILL_DIM + "  | cd - Go to a folder" + bcolors.ENDC)
-            print(                    "  | ls - Check whats inside a folder")
-            print(bcolors.CHILL_DIM + "  | clear - Clears the shell" + bcolors.ENDC)
-            print(                    "  | mkdir - Creates a directory in a desired folder")
-            print(bcolors.CHILL_DIM + "  | touch - Creates an empty file" + bcolors.ENDC)
-            print(                    "  | rm - Deletes a file/folder")
-            print(bcolors.CHILL_DIM + "  | micro - Edit any file" + bcolors.ENDC)
-            print(                    "  | reload [--full] - Reload AShell")
-            print(bcolors.CHILL_DIM + "  | ashell upgrade - Upgrades AShell to a newer version" + bcolors.ENDC)
-            print(                    "  | exit - Exit the shell")
-
-        elif command_lower == 'info':
-            info = get_system_info()
-            print("\n".join(info))
-
-        else:
-            try:
-                parts = shlex.split(command)
-            except ValueError:
-                print("AShell: Failed to parse command input")
-                continue
-
-            if len(parts) == 0:
-                continue
-
-            cmd = parts[0]
-            args = parts[1:]
-
-            handled, folder = commandHelper.run(working_folder, cmd, *args)
-            if handled:
-                if folder:
-                    new_folder = Path(folder)
-                    if new_folder != working_folder:
-                        working_folder = new_folder
-                        set_current_working_folder(str(working_folder))
-                continue
-
-            _run_external_command(working_folder, cmd, args)
 
 
 class bcolors:
