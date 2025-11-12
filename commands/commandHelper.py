@@ -7,6 +7,7 @@ from . import mkdir
 from . import rm
 from . import micro
 from . import touch
+from . import ashell
 
 
 def _validate_num_arguments(cmd_module, args) -> bool:
@@ -67,6 +68,13 @@ def run(working_folder, command, *args):
 
         case _ if command in touch.aliases:
             cmd = touch
+            if not _validate_num_arguments(cmd, args):
+                return True, new_working_folder
+            cmd.run(working_folder_path, *args)
+            return True, new_working_folder
+
+        case _ if command in ashell.aliases:
+            cmd = ashell
             if not _validate_num_arguments(cmd, args):
                 return True, new_working_folder
             cmd.run(working_folder_path, *args)

@@ -1,5 +1,4 @@
 import os
-from . import cd
 
 aliases = ["touch"]
 num_arguments = 1

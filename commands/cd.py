@@ -1,5 +1,4 @@
 import os
-#from . import bcolors
 
 aliases = ["cd", "goto"]
 num_arguments = 1

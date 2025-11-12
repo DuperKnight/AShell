@@ -27,6 +27,8 @@ from autocomplete import (
 from upgrade import (
     check_for_newer_version,
     format_version_for_display,
+    consume_pending_changelog,
+    render_markdown_for_terminal,
     perform_upgrade,
 )
 
@@ -35,6 +37,9 @@ SHELL_VERSION = "0.1.1"
 CONFIG_DIR = Path.home() / ".ashell"
 CONFIG_PATH = CONFIG_DIR / ".ashell.conf"
 START_DIR_ENV = "ASHELL_START_DIR"
+SHELL_EXECUTABLE_PATH = Path(__file__).resolve()
+SHELL_NAME = "AShell"
+SHELL_DISPLAY_NAME = f"{SHELL_NAME} v{SHELL_VERSION}"
 
 DEFAULT_CONFIG: dict[str, object] = {
     "show_welcome_screen": True,
@@ -46,6 +51,74 @@ DEFAULT_CONFIG: dict[str, object] = {
         "symbol": "$",
     },
 }
+
+
+_SHELL_ENV_VALUE: str | None = None
+
+
+def _ensure_shell_shim() -> Path | None:
+    if os.name == "nt":
+        return None
+
+    try:
+        shim_dir = CONFIG_DIR / "bin"
+        shim_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+
+    shim_path = shim_dir / "AShell"
+    legacy_path = shim_dir / "ashell"
+    if legacy_path.exists() and legacy_path != shim_path:
+        try:
+            legacy_path.unlink()
+        except OSError:
+            pass
+
+    display = SHELL_DISPLAY_NAME.replace("\"", "\\\"")
+    python_exec = shlex.quote(sys.executable)
+    shell_exec = shlex.quote(str(SHELL_EXECUTABLE_PATH))
+    shim_content = (
+        "#!/usr/bin/env sh\n"
+        "if [ \"$1\" = \"--version\" ] || [ \"$1\" = \"-v\" ] || "
+        "[ \"$1\" = \"version\" ] || [ \"$1\" = \"-version\" ]; then\n"
+        f"    echo \"{display}\"\n"
+        "    exit 0\n"
+        "fi\n"
+        f"exec {python_exec} {shell_exec} \"$@\"\n"
+    )
+
+    try:
+        current = shim_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        current = None
+    except OSError:
+        return None
+
+    if current != shim_content:
+        try:
+            with shim_path.open("w", encoding="utf-8") as handle:
+                handle.write(shim_content)
+        except OSError:
+            return None
+        try:
+            shim_path.chmod(0o755)
+        except OSError:
+            pass
+
+    return shim_path
+
+
+def _resolve_shell_env_value() -> str:
+    global _SHELL_ENV_VALUE
+    if _SHELL_ENV_VALUE is not None:
+        return _SHELL_ENV_VALUE
+
+    shim = _ensure_shell_shim()
+    if shim:
+        _SHELL_ENV_VALUE = str(shim)
+    else:
+        _SHELL_ENV_VALUE = str(SHELL_EXECUTABLE_PATH)
+    return _SHELL_ENV_VALUE
 
 
 if platform.system() == "Windows":
@@ -103,6 +176,19 @@ def _build_update_notice(force_refresh: bool = False) -> str | None:
     )
 
 
+def _build_subprocess_env() -> dict[str, str]:
+    env = dict(os.environ)
+    
+    env["SHELL"] = _resolve_shell_env_value()
+    env.setdefault("ASHELL", "1")
+    env["ASHELL_NAME"] = SHELL_NAME
+    env["ASHELL_VERSION"] = SHELL_VERSION
+    env["ASHELL_EXECUTABLE"] = str(SHELL_EXECUTABLE_PATH)
+    env["ASHELL_DISPLAY_NAME"] = SHELL_DISPLAY_NAME
+    env.setdefault("TERM_PROGRAM", SHELL_NAME)
+    return env
+
+
 def load_config() -> dict[str, object]:
     try:
         with CONFIG_PATH.open("r", encoding="utf-8") as handle:
@@ -137,8 +223,18 @@ def _format_prompt_path(path: Path) -> str:
         rel = resolved_path.relative_to(home)
         if str(rel) == ".":
             return "~"
-        return str(Path("~") / rel)
+
+        rel_parts = rel.parts
+        if len(rel_parts) >= 2:
+            return f"../{rel_parts[-2]}/{rel_parts[-1]}"
+        return f"../{rel_parts[-1]}"
     except ValueError:
+        name = resolved_path.name
+        parent_name = resolved_path.parent.name
+        if parent_name:
+            return f"{parent_name}/{name}"
+        if name:
+            return name
         return str(resolved_path)
 
 
@@ -224,7 +320,11 @@ def _run_external_command(working_folder: Path | str, command: str, args: list[s
         return
 
     try:
-        completed = subprocess.run([executable, *args], cwd=working_dir)
+        completed = subprocess.run(
+            [executable, *args],
+            cwd=working_dir,
+            env=_build_subprocess_env(),
+        )
         if completed.returncode not in (0, None):
             print(f"Process exited with status {completed.returncode}")
     except PermissionError:
@@ -297,6 +397,14 @@ def main():
     config = load_config()
     update_notice_message = _build_update_notice()
 
+    os.environ["SHELL"] = _resolve_shell_env_value()
+    os.environ.setdefault("ASHELL", "1")
+    os.environ["ASHELL_NAME"] = SHELL_NAME
+    os.environ["ASHELL_VERSION"] = SHELL_VERSION
+    os.environ["ASHELL_EXECUTABLE"] = str(SHELL_EXECUTABLE_PATH)
+    os.environ["ASHELL_DISPLAY_NAME"] = SHELL_DISPLAY_NAME
+    os.environ.setdefault("TERM_PROGRAM", SHELL_NAME)
+
     start_dir = os.environ.pop(START_DIR_ENV, "")
     if start_dir:
         candidate = Path(start_dir)
@@ -326,6 +434,18 @@ def main():
         _render_welcome_screen()
     if update_notice_message:
         print(update_notice_message)
+
+    pending = consume_pending_changelog()
+    if pending:
+        pending_tag, changelog_text = pending
+        display_version = format_version_for_display(pending_tag)
+        print(f"{bcolors.BOLD}What's new in {SHELL_NAME} {display_version}:{bcolors.ENDC}")
+        rendered = render_markdown_for_terminal(changelog_text)
+        if rendered:
+            print(rendered)
+        else:
+            print(changelog_text.strip() if changelog_text else "(No release notes available)")
+        print()
 
     while True:
         try:
@@ -392,6 +512,7 @@ def main():
                 print(bcolors.CHILL_DIM + "  | micro - Edit any file" + bcolors.ENDC)
                 print(                    "  | reload [--full] - Reload AShell")
                 print(bcolors.CHILL_DIM + "  | ashell upgrade - Upgrades AShell to a newer version" + bcolors.ENDC)
+                print(bcolors.CHILL_DIM + "  | ashell changelog - Show release notes for this version" + bcolors.ENDC)
                 print(                    "  | exit - Exit the shell")
 
             elif command_lower == 'info':
@@ -423,7 +544,6 @@ def main():
                 _run_external_command(working_folder, cmd, args)
 
         except KeyboardInterrupt:
-            # Gracefully handle Ctrl+C to keep the shell running like typical terminals.
             print()
             continue
 
@@ -445,17 +565,52 @@ class bcolors:
 if __name__ == "__main__":
     cli_args = sys.argv[1:]
     if cli_args:
-        primary = cli_args[0].lower()
-        if primary == "upgrade":
-            if len(cli_args) > 1:
-                print("AShell: 'upgrade' does not accept additional arguments.")
-                sys.exit(1)
-            sys.exit(
-                perform_upgrade(
-                    SHELL_VERSION,
-                    install_dir=Path(__file__).resolve().parent,
+        if cli_args and not cli_args[0].startswith("-"):
+            primary = cli_args[0].lower()
+            if primary == "upgrade":
+                if len(cli_args) > 1:
+                    print("AShell: 'upgrade' does not accept additional arguments.")
+                    sys.exit(1)
+                sys.exit(
+                    perform_upgrade(
+                        SHELL_VERSION,
+                        install_dir=Path(__file__).resolve().parent,
+                    )
                 )
-            )
-        print(f"AShell: unknown argument '{cli_args[0]}'")
-        sys.exit(1)
+            if primary == "version":
+                if len(cli_args) > 1:
+                    print("AShell: version commands do not accept additional arguments.")
+                    sys.exit(1)
+                print(SHELL_DISPLAY_NAME)
+                sys.exit(0)
+            print(f"AShell: unknown argument '{cli_args[0]}'")
+            sys.exit(1)
+
+        index = 0
+        while index < len(cli_args):
+            arg = cli_args[index]
+            if arg in {"-l", "--login"}:
+                index += 1
+                continue
+            if arg == "-c":
+                if index + 1 >= len(cli_args):
+                    print("AShell: '-c' requires a command string.")
+                    sys.exit(1)
+                command_to_run = cli_args[index + 1]
+                env = _build_subprocess_env()
+                try:
+                    completed = subprocess.run(command_to_run, shell=True, env=env)
+                except OSError as exc:
+                    print(f"AShell: failed to execute '-c' command: {exc}")
+                    sys.exit(1)
+                sys.exit(completed.returncode)
+            if arg in {"--version", "-v", "-version"}:
+                trailing = [value for value in cli_args[index + 1:] if not value.startswith("-")]
+                if trailing:
+                    print("AShell: version commands do not accept additional arguments.")
+                    sys.exit(1)
+                print(SHELL_DISPLAY_NAME)
+                sys.exit(0)
+            print(f"AShell: unknown argument '{arg}'")
+            sys.exit(1)
     main()

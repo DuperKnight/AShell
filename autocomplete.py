@@ -40,7 +40,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec("touch", ("touch",), (), True),
     CommandSpec("rm", ("rm",), ("-f", "-r", "-R", "-rf", "-fr", "--"), True),
     CommandSpec("micro", ("micro",), (), True),
-    CommandSpec("ashell", ("ashell",), ("upgrade"))
+    CommandSpec("ashell", ("ashell",), ("upgrade", "changelog", "version", "--version", "-v", "-version", "-c"))
 )
 
 COMMAND_BY_ALIAS: dict[str, CommandSpec] = {}
@@ -553,7 +553,25 @@ def _is_flag_context(fragment: str, tokens_before: list[str], spec: CommandSpec)
         return False
     if "--" in tokens_before[1:]:
         return False
-    return fragment.startswith("-")
+    if fragment.startswith("-"):
+        return True
+
+    has_non_dash_option = any(not flag.startswith("-") for flag in spec.flags)
+    if not has_non_dash_option:
+        return False
+
+    if len(tokens_before) <= 1:
+        return True
+
+    non_command_tokens = tokens_before[1:]
+    if not non_command_tokens:
+        return True
+
+    last_token = non_command_tokens[-1]
+    if last_token in spec.flags:
+        return False
+
+    return True
 
 
 def _collect_used_flags(tokens_before: list[str], spec: CommandSpec) -> set[str]:
