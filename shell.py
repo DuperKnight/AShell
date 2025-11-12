@@ -33,7 +33,7 @@ from upgrade import (
 )
 
 
-SHELL_VERSION = "0.1.1"
+SHELL_VERSION = "0.1.2"
 CONFIG_DIR = Path.home() / ".ashell"
 CONFIG_PATH = CONFIG_DIR / ".ashell.conf"
 START_DIR_ENV = "ASHELL_START_DIR"
