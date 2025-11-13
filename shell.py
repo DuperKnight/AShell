@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import json
 from pathlib import Path
 try:
@@ -33,11 +34,12 @@ from upgrade import (
 )
 
 
-SHELL_VERSION = "0.1.2"
+SHELL_VERSION = "0.1.3"
 CONFIG_DIR = Path.home() / ".ashell"
 CONFIG_PATH = CONFIG_DIR / ".ashell.conf"
+HISTORY_PATH = CONFIG_DIR / "history"
 START_DIR_ENV = "ASHELL_START_DIR"
-SHELL_EXECUTABLE_PATH = Path(__file__).resolve()
+SHELL_SCRIPT_PATH = Path(__file__).resolve()
 SHELL_NAME = "AShell"
 SHELL_DISPLAY_NAME = f"{SHELL_NAME} v{SHELL_VERSION}"
 
@@ -51,6 +53,46 @@ DEFAULT_CONFIG: dict[str, object] = {
         "symbol": "$",
     },
 }
+
+
+def _resolve_shell_executable_path() -> Path:
+    override = os.environ.get("ASHELL_EXECUTABLE_OVERRIDE")
+    if override:
+        candidate = Path(override).expanduser()
+        try:
+            if candidate.exists():
+                return candidate.resolve()
+        except OSError:
+            pass
+
+    candidates: list[Path] = []
+    if os.name != "nt":
+        candidates.extend(
+            [
+                Path.home() / ".local" / "bin" / "ashell",
+                Path.home() / ".local" / "bin" / "AShell",
+                SHELL_SCRIPT_PATH.parent / "ashell",
+            ]
+        )
+    else:
+        candidates.extend(
+            [
+                SHELL_SCRIPT_PATH.parent / "ashell.cmd",
+                SHELL_SCRIPT_PATH.parent / "ashell.exe",
+            ]
+        )
+
+    for candidate in candidates:
+        try:
+            if candidate.exists():
+                return candidate.resolve()
+        except OSError:
+            continue
+
+    return SHELL_SCRIPT_PATH
+
+
+SHELL_EXECUTABLE_PATH = _resolve_shell_executable_path()
 
 
 _SHELL_ENV_VALUE: str | None = None
@@ -76,7 +118,7 @@ def _ensure_shell_shim() -> Path | None:
 
     display = SHELL_DISPLAY_NAME.replace("\"", "\\\"")
     python_exec = shlex.quote(sys.executable)
-    shell_exec = shlex.quote(str(SHELL_EXECUTABLE_PATH))
+    shell_exec = shlex.quote(str(SHELL_SCRIPT_PATH))
     shim_content = (
         "#!/usr/bin/env sh\n"
         "if [ \"$1\" = \"--version\" ] || [ \"$1\" = \"-v\" ] || "
@@ -119,6 +161,50 @@ def _resolve_shell_env_value() -> str:
     else:
         _SHELL_ENV_VALUE = str(SHELL_EXECUTABLE_PATH)
     return _SHELL_ENV_VALUE
+
+
+_HISTORY_INITIALIZED = False
+
+
+def _save_command_history() -> None:
+    if not readline:
+        return
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    try:
+        readline.set_history_length(2000)
+    except AttributeError:
+        pass
+    try:
+        readline.write_history_file(str(HISTORY_PATH))
+    except (OSError, AttributeError):
+        pass
+
+
+def _initialize_history() -> None:
+    if not readline:
+        return
+    global _HISTORY_INITIALIZED
+    if _HISTORY_INITIALIZED:
+        return
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    try:
+        readline.read_history_file(str(HISTORY_PATH))
+    except FileNotFoundError:
+        pass
+    except (OSError, AttributeError):
+        pass
+    try:
+        readline.set_history_length(2000)
+    except AttributeError:
+        pass
+    atexit.register(_save_command_history)
+    _HISTORY_INITIALIZED = True
 
 
 if platform.system() == "Windows":
@@ -427,6 +513,8 @@ def main():
             readline.parse_and_bind("set show-all-if-ambiguous on")
         except Exception:
             pass
+        
+        _initialize_history()
 
     _clear_screen(working_folder)
 
@@ -456,6 +544,15 @@ def main():
                 continue
             command_lower = command_stripped.lower()
 
+            if readline:
+                try:
+                    length = readline.get_current_history_length()
+                    last_entry = readline.get_history_item(length) if length > 0 else None
+                    if not last_entry or last_entry != command_stripped:
+                        readline.add_history(command_stripped)
+                except (AttributeError, ValueError):
+                    pass
+
             if command_lower == 'exit':
                 print("Exiting AShell. Goodbye!")
                 break
@@ -482,6 +579,7 @@ def main():
                 if full_reload:
                     print(f"{bcolors.DIM}Performing full reload...{bcolors.ENDC}")
                     os.environ[START_DIR_ENV] = str(working_folder)
+                    _save_command_history()
                     try:
                         os.execl(sys.executable, sys.executable, *sys.argv)
                     except OSError as exc:
@@ -546,6 +644,11 @@ def main():
         except KeyboardInterrupt:
             print()
             continue
+        except EOFError:
+            print()
+            break
+
+    _save_command_history()
 
 
 class bcolors:
